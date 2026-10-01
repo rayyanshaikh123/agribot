@@ -1,11 +1,11 @@
 import type { Metadata, Viewport } from 'next';
-import { Roboto } from 'next/font/google';
+import { Poppins, Space_Mono } from 'next/font/google';
 import type { ReactNode } from 'react';
 
 import './globals.css';
 
-// The Flutter app renders in SF Pro on iPhone (system font) and Roboto on Android; match both.
-const roboto = Roboto({ subsets: ['latin'], weight: ['400', '500', '700', '900'], variable: '--font-roboto', display: 'swap' });
+const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700', '800'], variable: '--font-poppins', display: 'swap' });
+const spaceMono = Space_Mono({ subsets: ['latin'], weight: ['400', '700'], variable: '--font-space-mono', display: 'swap' });
 
 export const metadata: Metadata = {
   // Set NEXT_PUBLIC_SITE_URL to your domain so social previews use absolute image URLs.
@@ -23,7 +23,7 @@ export const viewport: Viewport = { themeColor: '#f1f3ee' };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={roboto.variable}>
+    <html lang="en" className={`${poppins.variable} ${spaceMono.variable}`}>
       <body>{children}</body>
     </html>
   );
