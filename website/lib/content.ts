@@ -67,8 +67,8 @@ export const SPECS: { title: string; text: string }[] = [
   { title: 'Raspberry Pi', text: 'Open hardware, standard GPIO wiring, one install script' },
 ];
 
-/** Drop the APK at public/downloads/agribot.apk and the button switches on automatically. */
-export const APK_PATH = '/downloads/agribot.apk';
+/** APK asset published on the GitHub Release. */
+export const APK_PATH = 'https://github.com/rayyanshaikh123/agribot/releases/download/app/agribot.apk';
 
 /** Callouts for the top-view finale; ids match the anchors in lib/scene.ts. */
 export const SENSORS: { id: 'camera' | 'probe' | 'dht' | 'rain' | 'pi' | 'radio' | 'power' | 'drive'; name: string; detail: string }[] = [
