@@ -18,7 +18,7 @@ REPO_DIR="$(dirname "$PI_DIR")"
 echo "==> Installing system packages"
 apt-get update
 apt-get install -y python3-venv python3-numpy python3-opencv python3-gpiozero python3-spidev \
-  python3-picamera2 python3-dbus python3-gi python3-lgpio bluez network-manager
+  python3-picamera2 python3-dbus python3-gi python3-lgpio python3-evdev bluez network-manager
 
 echo "==> Linking checkout to /opt/agribot"
 mkdir -p /opt/agribot /var/lib/agribot
