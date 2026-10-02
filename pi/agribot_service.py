@@ -5,6 +5,7 @@ One lightweight process that:
   * reads the field sensors and publishes them to the backend,
   * runs the tomato-leaf disease model on camera captures,
   * polls the backend for app commands (scan now, refresh readings),
+  * drives the motors from a PS5 controller or the app (local HTTP),
   * advertises a Bluetooth LE service so the app can share Wi-Fi,
   * exposes a small local HTTP API for diagnostics.
 
@@ -21,12 +22,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from agribot.backend import BackendClient, BackendError
 from agribot.ble import BleProvisioner
 from agribot.config import load_config
+from agribot.drive import Drive, arcade
 from agribot.network import WifiManager
 from agribot.sensors import SensorHub
 from agribot.state import StateStore
 from agribot.vision import Camera, Detector, decode_image, encode_jpeg, jpeg_data_uri, summarize
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 
 class AgriBot:
@@ -36,6 +38,7 @@ class AgriBot:
         self.sensors = SensorHub(config)
         self.detector = Detector(config)
         self.camera = Camera(config)
+        self.drive = Drive(config)
         self.wifi = WifiManager(config.wifi_interface)
         self.backend = BackendClient(self.backend_url, config.robot_key)
         self.ble = BleProvisioner(config, self.wifi, self.ble_status, self.set_backend_url)
@@ -48,6 +51,8 @@ class AgriBot:
         self.internet = None
         self._internet_checked = 0
         self._publish_now = threading.Event()
+        self._frame = (0.0, None)
+        self._frame_lock = threading.Lock()
 
     # --- configuration ------------------------------------------------------
     def backend_url(self):
@@ -65,6 +70,8 @@ class AgriBot:
             "model": self.detector.ready,
             "sensors": self.sensors.mode,
             "ble": self.ble.running,
+            "drive": self.drive.ready,
+            "gamepad": self.drive.gamepad,
         }
 
     def status(self):
@@ -72,7 +79,7 @@ class AgriBot:
         return {
             "version": VERSION,
             "capabilities": self.capabilities(),
-            "errors": {k: v for k, v in {"camera": self.camera.error, "model": self.detector.error, "sensors": self.sensors.error, "ble": self.ble.error}.items() if v},
+            "errors": {k: v for k, v in {"camera": self.camera.error, "model": self.detector.error, "sensors": self.sensors.error, "ble": self.ble.error, "drive": self.drive.error}.items() if v},
             "network": {**wifi, "internet": self.internet},
             "backend": {"url": self.backend_url(), "connected": time.time() - self.backend_ok_at < 15, "error": self.backend_error},
             "lastScan": self.latest_scan and {k: self.latest_scan[k] for k in ("summary", "at", "inferenceMs")},
@@ -119,6 +126,15 @@ class AgriBot:
         if publish and self.backend.configured:
             self.backend.request("POST", "/api/robot/detections", {**result, "image": jpeg_data_uri(jpeg)}, timeout=60)
         return result
+
+    def live_frame(self):
+        """Small JPEG for the app's drive view, shared between viewers (~12 fps max)."""
+        with self._frame_lock:
+            at, jpeg = self._frame
+            if jpeg is None or time.monotonic() - at > 0.08:
+                jpeg = encode_jpeg(self.camera.capture(), max_side=640, quality=60)
+                self._frame = (time.monotonic(), jpeg)
+            return jpeg
 
     def run_command(self, command):
         kind, command_id = command.get("type"), command.get("id")
@@ -185,6 +201,7 @@ class AgriBot:
 
     def start(self):
         self.ble.start()
+        self.drive.start(self.stop)
         loops = [self._worker, self._heartbeat, self._publisher]
         if self.cfg.auto_scan_interval > 0:
             loops.append(self._auto_scanner)
@@ -193,6 +210,7 @@ class AgriBot:
 
     def close(self):
         self.stop.set()
+        self.drive.close()
         self.camera.close()
         self.sensors.close()
 
@@ -239,6 +257,21 @@ def make_handler(bot):
                 if not bot.latest_jpeg:
                     return self._send(404, {"success": False, "message": "No scan yet."})
                 return self._send(200, bot.latest_jpeg, "image/jpeg")
+            if get and path == "/camera/frame.jpg":
+                return self._send(200, bot.live_frame(), "image/jpeg")
+            if get and path == "/drive":
+                return self._send(200, {"success": True, "data": bot.drive.state()})
+            if post and path == "/drive":
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}") if 0 < length <= 1024 else {}
+                if "throttle" in body or "turn" in body:
+                    left, right = arcade(float(body.get("throttle", 0)), float(body.get("turn", 0)))
+                else:
+                    left, right = float(body.get("left", 0)), float(body.get("right", 0))
+                return self._send(200, {"success": True, "data": bot.drive.set(left, right)})
+            if post and path == "/drive/stop":
+                bot.drive.stop()
+                return self._send(200, {"success": True, "data": bot.drive.state()})
             if get and path == "/network":
                 return self._send(200, {"success": True, "data": {**bot.wifi.status(), "networks": bot.wifi.scan()}})
             return self._send(404, {"success": False, "message": "Endpoint not found."})

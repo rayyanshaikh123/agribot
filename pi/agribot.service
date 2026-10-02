@@ -1,5 +1,5 @@
 [Unit]
-Description=AgriBot Pi service (sensors, crop vision, Bluetooth Wi-Fi setup)
+Description=AgriBot Pi service (sensors, crop vision, driving, Bluetooth Wi-Fi setup)
 Wants=network-online.target bluetooth.target
 After=network-online.target bluetooth.target
 
