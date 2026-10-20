@@ -707,22 +707,33 @@ curl -X POST http://PI_IP:8000/vision/scan    # capture, detect, upload
 curl -X POST --data-binary @leaf.jpg "http://PI_IP:8000/vision/detect?publish=1"
 curl -o latest.jpg http://PI_IP:8000/vision/latest.jpg
 curl http://PI_IP:8000/network                # Wi-Fi state and nearby networks
+curl -X POST http://PI_IP:8000/stop           # stop wheels and arm (always allowed)
+curl http://PI_IP:8000/esp32                  # ESP32 serial link
+curl http://PI_IP:8000/ph                     # last probe measurement (null until valid)
+curl http://PI_IP:8000/arm                    # probe arm state and last workflow
 ```
+
+Each reading in `/sensors` carries a status (`ok`, `stale`, `unavailable`, `placeholder`,
+`not_installed`, `simulated`). Arm motion endpoints (`/arm/jog|home|retract|insert`,
+`/ph/measure`) only accept requests from the Pi itself or with the `AGRIBOT_LOCAL_TOKEN`
+header. On the Pi, `pi/tools/agribotctl.py` wraps all of this. Commissioning the ESP32, pH
+probe and arm is described in [docs/COMMISSIONING.md](docs/COMMISSIONING.md), and the
+firmware in [esp32/README.md](esp32/README.md).
 
 Wi-Fi can only be changed over Bluetooth, never over this HTTP API.
 
 ### Calibration and demo values
 
-Use the raw value from `/sensors/soil-moisture` to set `SOIL_DRY_VALUE` with the probe in dry soil and `SOIL_WET_VALUE` with it in wet soil. Until the analog probes are wired, `USE_FAKE_SOIL_MOISTURE` and `USE_FAKE_PH` publish the `FAKE_*` values. Restart the service after editing `/etc/agribot.env`.
+Once a soil sensor is installed (`SOIL_SENSOR`), use the raw value from `/sensors/soil-moisture` to set `SOIL_DRY_VALUE` with the probe in dry soil and `SOIL_WET_VALUE` with it in wet soil. Until then the backend, which requires a soil number, receives `SOIL_PLACEHOLDER_PERCENT` (labelled `placeholder` on the Pi). No fake pH is published: pH stays `null` until a calibrated probe measurement exists (`PH_CALIBRATION`, see docs/COMMISSIONING.md), and `USE_FAKE_PH` is ignored. If the DHT22 or rain sensor fails, readings are not published rather than invented. Restart the service after editing `/etc/agribot.env`.
 
 ### Run on a laptop for testing
 
-The service also runs on a laptop with simulated sensors and no Bluetooth:
+The service also runs on a laptop with simulated (clearly labelled) sensors and no Bluetooth:
 
 ```bash
 pip install onnxruntime opencv-python-headless numpy
 cd pi
-AGRIBOT_BACKEND_URL=http://127.0.0.1:5000 ROBOT_INGEST_KEY=... CAMERA=none STATE_FILE=state.json python agribot_service.py
+SIMULATE_SENSORS=true AGRIBOT_BACKEND_URL=http://127.0.0.1:5000 ROBOT_INGEST_KEY=... CAMERA=none STATE_FILE=state.json python agribot_service.py
 ```
 
 ### Robot JSON contract

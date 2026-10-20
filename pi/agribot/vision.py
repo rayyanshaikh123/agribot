@@ -133,11 +133,15 @@ class Detector:
         """Run inference on a BGR image and return detections plus timing."""
         if not self.ready:
             raise RuntimeError(f"Vision model is not available: {self.error}")
+        image = validate_frame(image)
         height, width = image.shape[:2]
         blob, scale, pad_x, pad_y = self._letterbox(image)
         started = time.perf_counter()
-        with self._lock:
-            output = self.session.run(None, {self.input_name: blob})[0]
+        try:
+            with self._lock:
+                output = self.session.run(None, {self.input_name: blob})[0]
+        except Exception as error:  # onnxruntime errors must not crash the worker
+            raise RuntimeError(f"Inference failed: {error}") from error
         elapsed = round((time.perf_counter() - started) * 1000)
         return self._decode(output, scale, pad_x, pad_y, width, height), elapsed
 
@@ -191,14 +195,32 @@ def decode_image(data):
     return image
 
 
+def validate_frame(frame):
+    """Return a contiguous 3-channel BGR frame or raise RuntimeError."""
+    if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.size == 0 or min(frame.shape[:2]) < 16:
+        raise RuntimeError("camera returned an invalid frame")
+    if frame.shape[2] == 4:  # XBGR/XRGB buffers: drop the padding channel
+        frame = frame[:, :, :3]
+    elif frame.shape[2] != 3:
+        raise RuntimeError(f"camera returned {frame.shape[2]}-channel frames")
+    return np.ascontiguousarray(frame)
+
+
 class Camera:
-    """Pi Camera via Picamera2, falling back to a USB webcam via OpenCV."""
+    """Picamera2 (libcamera also drives UVC webcams such as the Logitech),
+    falling back to a USB webcam through OpenCV/V4L2.
+
+    The device stays open between captures; a failed capture closes it and the
+    next capture reopens it, so unplugging and replugging the camera recovers
+    without restarting the service."""
 
     def __init__(self, config):
         self.cfg = config
         self.kind = None
         self.error = None
+        self.failures = 0
         self._picam = None
+        self._usb = None
         self._lock = threading.Lock()
         if config.camera == "none":
             self.error = "disabled by CAMERA=none"
@@ -214,45 +236,85 @@ class Camera:
                 self._picam, self.kind = cam, "picamera"
             except Exception as error:
                 self.error = f"Pi camera unavailable: {error}"
-        if self.kind is None and config.camera in {"auto", "usb"} and cv2 is not None:
-            capture = cv2.VideoCapture(config.camera_index)
-            if capture.isOpened():
-                self.kind, self.error = "usb", None
+        if self.kind is None and config.camera in {"auto", "usb"}:
+            if cv2 is None:
+                self.error = (self.error + "; " if self.error else "") + "OpenCV not installed"
             else:
-                self.error = (self.error + "; " if self.error else "") + f"no USB camera at index {config.camera_index}"
-            capture.release()
+                self._usb = self._open_usb()
+                if self._usb is not None:
+                    self.kind, self.error = "usb", None
+                else:
+                    self.error = (self.error + "; " if self.error else "") + f"no USB camera at /dev/video{config.camera_index}"
         if self.kind:
             print(f"[camera] Using {self.kind} camera")
         else:
             print(f"[camera] Disabled: {self.error}")
 
+    def _open_usb(self):
+        capture = cv2.VideoCapture(f"/dev/video{self.cfg.camera_index}", cv2.CAP_V4L2)
+        if not capture.isOpened():
+            capture.release()
+            return None
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.camera_width)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.camera_height)
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # keep frames fresh
+        for _ in range(3):  # discard warm-up frames (auto exposure)
+            capture.read()
+        return capture
+
+    def _release_usb(self):
+        if self._usb is not None:
+            try:
+                self._usb.release()
+            except Exception:
+                pass
+            self._usb = None
+
     @property
     def ready(self):
         return self.kind is not None
+
+    def _capture_usb(self):
+        for _ in range(2):  # one reopen attempt after a failure
+            if self._usb is None:
+                self._usb = self._open_usb()
+                if self._usb is None:
+                    raise RuntimeError(f"USB camera /dev/video{self.cfg.camera_index} cannot be opened (unplugged?)")
+            self._usb.grab()  # drop the buffered (possibly old) frame
+            ok, frame = self._usb.read()
+            if ok and frame is not None:
+                return frame
+            self._release_usb()
+        raise RuntimeError("USB camera returned no frame.")
 
     def capture(self):
         if not self.ready:
             raise RuntimeError(f"No camera available: {self.error}")
         with self._lock:
-            if self.kind == "picamera":
-                # Picamera2's "RGB888" buffer is laid out B,G,R - already OpenCV order.
-                return self._picam.capture_array()
-            capture = cv2.VideoCapture(self.cfg.camera_index)
             try:
-                capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.camera_width)
-                capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.camera_height)
-                frame = None
-                for _ in range(5):  # discard warm-up frames
-                    ok, frame = capture.read()
-                if not ok or frame is None:
-                    raise RuntimeError("USB camera returned no frame.")
-                return frame
-            finally:
-                capture.release()
+                if self.kind == "picamera":
+                    # Picamera2's "RGB888" buffer is laid out B,G,R - already OpenCV order.
+                    frame = self._picam.capture_array()
+                else:
+                    frame = self._capture_usb()
+                frame = validate_frame(frame)
+            except Exception as error:
+                self.failures += 1
+                if self.failures in (1, 10) or self.failures % 100 == 0:
+                    print(f"[camera] Capture failed ({self.failures}x): {error}")
+                raise RuntimeError(f"Camera capture failed: {error}") from error
+            if self.failures:
+                print(f"[camera] Capturing again after {self.failures} failure(s)")
+                self.failures = 0
+            return frame
 
     def close(self):
-        if self._picam:
-            try:
-                self._picam.stop()
-            except Exception:
-                pass
+        with self._lock:
+            self._release_usb()
+            if self._picam:
+                for method in ("stop", "close"):
+                    try:
+                        getattr(self._picam, method)()
+                    except Exception:
+                        pass
+                self._picam = None
