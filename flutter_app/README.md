@@ -34,7 +34,7 @@ Replace the angle-bracket paths with your actual installation directories; the J
 
 The APK is at `build/app/outputs/flutter-apk/app-release.apk`. Enable USB debugging and use `flutter devices` followed by `flutter run -d <device-id>` to run on a phone. Android 6 / API 23 or newer is required. Release APKs currently use the local debug key for team testing; configure a private release key before publishing to an app store. APKs built on different machines may have different signatures, requiring an uninstall before reinstalling (which clears local app data).
 
-For a build without local tooling, open a successful [Build and check](https://github.com/rayyanshaikh123/agribot/actions/workflows/ci.yml) run and download the **agribot-android-apk** artifact. GitHub requires sign-in to download workflow artifacts. Unzip it to get `app-release.apk`.
+[Build and check](https://github.com/rayyanshaikh123/agribot/actions/workflows/ci.yml) runs `flutter analyze` and `flutter test` only; it does not produce an APK or iOS build.
 
 ### iPhone (macOS only)
 

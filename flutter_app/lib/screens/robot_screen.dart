@@ -7,6 +7,7 @@ import '../state/auth_controller.dart';
 import '../state/ble_controller.dart';
 import '../state/robot_controller.dart';
 import '../widgets/common.dart';
+import 'drive_screen.dart';
 import 'home_shell.dart';
 import 'map_screen.dart';
 import 'share_network_sheet.dart';
@@ -103,6 +104,8 @@ class RobotScreen extends StatelessWidget {
                       ]),
                     ),
                 ]),
+                const SizedBox(height: 16),
+                PrimaryButton(light: true, icon: Icons.sports_esports, label: 'Drive AgriBot', onPressed: () => DriveScreen.open(context)),
               ]),
             ),
           ),

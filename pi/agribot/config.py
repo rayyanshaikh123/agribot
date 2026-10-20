@@ -24,6 +24,11 @@ def _int(name, default):
     return int(_env(name, str(default)))
 
 
+def _pin(name, default):
+    value = _env(name, str(default))
+    return int(value) if value else None
+
+
 def _path(name, default):
     path = Path(_env(name, default)).expanduser()
     return path if path.is_absolute() else (PI_ROOT / path).resolve()
@@ -90,6 +95,18 @@ class Config:
     camera_width: int
     camera_height: int
     auto_scan_interval: int
+    # Driving (L298N + PS5 controller).
+    drive_enabled: bool
+    motor_left_forward: int
+    motor_left_backward: int
+    motor_right_forward: int
+    motor_right_backward: int
+    motor_left_enable: int | None
+    motor_right_enable: int | None
+    drive_max_speed: float
+    drive_timeout_ms: int
+    gamepad_enabled: bool
+    gamepad_deadzone: float
     # Bluetooth provisioning.
     ble_enabled: bool
     ble_name: str
@@ -132,6 +149,17 @@ def load_config():
         camera_width=_int("CAMERA_WIDTH", 1280),
         camera_height=_int("CAMERA_HEIGHT", 960),
         auto_scan_interval=_int("AUTO_SCAN_INTERVAL_SECONDS", 0),
+        drive_enabled=_flag("DRIVE_ENABLED", "true"),
+        motor_left_forward=_int("MOTOR_LEFT_FORWARD_PIN", 5),
+        motor_left_backward=_int("MOTOR_LEFT_BACKWARD_PIN", 6),
+        motor_right_forward=_int("MOTOR_RIGHT_FORWARD_PIN", 16),
+        motor_right_backward=_int("MOTOR_RIGHT_BACKWARD_PIN", 26),
+        motor_left_enable=_pin("MOTOR_LEFT_ENABLE_PIN", 12),
+        motor_right_enable=_pin("MOTOR_RIGHT_ENABLE_PIN", 13),
+        drive_max_speed=max(0.1, min(1.0, _float("DRIVE_MAX_SPEED", 1.0))),
+        drive_timeout_ms=_int("DRIVE_TIMEOUT_MS", 600),
+        gamepad_enabled=_flag("GAMEPAD_ENABLED", "true"),
+        gamepad_deadzone=_float("GAMEPAD_DEADZONE", 0.12),
         ble_enabled=_flag("BLE_ENABLED", "true"),
         ble_name=_env("BLE_NAME", "AgriBot"),
         ble_pin=_env("BLE_PAIRING_PIN"),
