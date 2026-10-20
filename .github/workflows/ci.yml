@@ -60,7 +60,7 @@ jobs:
             -d '{"email":"ci@example.com","password":"test-password-123"}' \
             http://127.0.0.1:5000/api/auth/login | jq -er '.token')
           curl --fail --silent -H "x-robot-key: $ROBOT_INGEST_KEY" -H 'Content-Type: application/json' \
-            -d '{"sensors":{"soilMoisture":48,"temperature":29,"humidity":64},"robot":{"status":"online"},"location":{"latitude":19.04,"longitude":72.87}}' \
+            -d '{"sensors":{"soilMoisture":48,"temperature":29,"humidity":64,"rainfall":0},"robot":{"status":"online"},"location":{"latitude":19.04,"longitude":72.87}}' \
             http://127.0.0.1:5000/api/robot/data | jq -e '.success == true'
           curl --fail --silent -H "Authorization: Bearer $token" \
             http://127.0.0.1:5000/api/robot/dashboard | jq -e '.data.sensors.soilMoisture == 48'
@@ -101,7 +101,7 @@ jobs:
           channel: stable
           cache: true
       - name: Install Android SDK packages
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
       - run: flutter pub get --enforce-lockfile
       - run: flutter analyze --no-pub
       - run: flutter test --no-pub
