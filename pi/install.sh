@@ -2,6 +2,14 @@
 # Installs the AgriBot Pi service. Run on the Pi from this folder:  sudo ./install.sh
 set -euo pipefail
 
+if [[ $(uname -s) != Linux ]] || ! command -v raspi-config >/dev/null || ! command -v apt-get >/dev/null; then
+  echo "Install on a Raspberry Pi running Raspberry Pi OS Bookworm or newer (64-bit)."
+  exit 1
+fi
+if [[ $(dpkg --print-architecture) != arm64 ]]; then
+  echo "The ONNX runtime requires 64-bit Raspberry Pi OS (arm64). Reimage the Pi with the 64-bit OS."
+  exit 1
+fi
 if [[ $EUID -ne 0 ]]; then echo "Run with sudo: sudo ./install.sh"; exit 1; fi
 
 PI_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +51,7 @@ raspi-config nonint do_spi 0 || true
 install -m 644 "$PI_DIR/agribot.service" /etc/systemd/system/agribot.service
 systemctl disable --now agribot-sensors.service 2>/dev/null || true
 systemctl daemon-reload
-systemctl enable --now agribot.service
-systemctl --no-pager status agribot.service | head -n 12
+systemctl enable agribot.service
+systemctl restart agribot.service
+systemctl --no-pager --lines=10 status agribot.service
 echo "==> Done. Logs: journalctl -u agribot -f"

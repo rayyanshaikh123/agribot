@@ -1,6 +1,55 @@
 # AgriBot Flutter app
 
-The farmer app for AgriBot, rebuilt in Flutter. It replaces the Expo app in `../mobile-app`, using the same backend APIs, Socket.IO events and Pi Bluetooth protocol.
+The farmer app for AgriBot, using the backend APIs, Socket.IO events and Pi Bluetooth protocol in this repository.
+
+## Build from a fresh clone
+
+Use **Flutter 3.47.1**, which includes **Dart 3.13.1** and matches the GitHub Actions build. Android uses Gradle 9.3.1, Android Gradle Plugin 9.1.0 and Kotlin 2.4.0; older Flutter installations may not support this configuration.
+
+```bash
+git clone https://github.com/rayyanshaikh123/agribot.git
+cd agribot/flutter_app
+flutter --version
+flutter doctor -v
+flutter pub get --enforce-lockfile
+flutter analyze --no-pub
+flutter test --no-pub
+```
+
+You can compile and test without the robot, AI weights, a local backend or private credentials. Running the app's data features requires a reachable backend; Bluetooth requires a physical phone.
+
+### Android (Windows, Linux or macOS)
+
+Install Android Studio and **JDK 17**. In Android Studio's SDK Manager, install Android SDK Platform **36**, Build-Tools **36.0.0**, Android SDK Command-line Tools, Platform-Tools, and NDK **28.2.13676358** (enable **Show Package Details** to select it).
+
+```bash
+flutter config --android-sdk <your-android-sdk-directory>
+flutter config --jdk-dir <your-jdk-17-home>
+flutter doctor --android-licenses
+flutter doctor -v
+flutter build apk --release --no-pub
+```
+
+Replace the angle-bracket paths with your actual installation directories; the JDK path must contain `bin/java` (`bin/java.exe` on Windows). Do not commit `android/local.properties`: Flutter generates it with your machine's SDK paths.
+
+The APK is at `build/app/outputs/flutter-apk/app-release.apk`. Enable USB debugging and use `flutter devices` followed by `flutter run -d <device-id>` to run on a phone. Android 6 / API 23 or newer is required. Release APKs currently use the local debug key for team testing; configure a private release key before publishing to an app store. APKs built on different machines may have different signatures, requiring an uninstall before reinstalling (which clears local app data).
+
+For a build without local tooling, open a successful [Build and check](https://github.com/rayyanshaikh123/agribot/actions/workflows/ci.yml) run and download the **agribot-android-apk** artifact. GitHub requires sign-in to download workflow artifacts. Unzip it to get `app-release.apk`.
+
+### iPhone (macOS only)
+
+Install Xcode, its iOS platform support, and CocoaPods. After `flutter pub get`, run:
+
+```bash
+cd ios
+pod install
+cd ..
+flutter build ios --release --no-codesign
+```
+
+This checks compilation without Apple signing credentials. To install on your iPhone, open `ios/Runner.xcworkspace` in Xcode, select **Runner > Signing & Capabilities**, choose your own development team and a unique bundle identifier, then run `flutter run -d <device-id>`. iOS 15 or newer is required. A teammate cannot use another developer's provisioning profile.
+
+The project includes CocoaPods support for plugins that do not provide Swift packages. Keep `Podfile` and `Podfile.lock` committed; generated `Pods/` and `Flutter/ephemeral/` stay local.
 
 ## Features
 

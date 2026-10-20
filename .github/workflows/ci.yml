@@ -1,0 +1,121 @@
+name: Build and check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017/agribot_ci
+      JWT_SECRET: ci-only-jwt-secret-not-for-deployment
+      ROBOT_INGEST_KEY: ci-only-robot-key-not-for-deployment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Check JavaScript syntax
+        run: |
+          for source in $(git ls-files 'src/*.js' 'src/**/*.js'); do
+            node --check "$source"
+          done
+      - name: Check startup, authentication and robot ingestion
+        run: |
+          npm start > "$RUNNER_TEMP/agribot-backend.log" 2>&1 &
+          trap 'cat "$RUNNER_TEMP/agribot-backend.log"' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:5000/api/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:5000/api/health | jq -e '.database == "connected"'
+          curl --fail --silent -H 'Content-Type: application/json' \
+            -d '{"name":"CI Farmer","email":"ci@example.com","password":"test-password-123"}' \
+            http://127.0.0.1:5000/api/auth/signup | jq -e '.success == true'
+          token=$(curl --fail --silent -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.com","password":"test-password-123"}' \
+            http://127.0.0.1:5000/api/auth/login | jq -er '.token')
+          curl --fail --silent -H "x-robot-key: $ROBOT_INGEST_KEY" -H 'Content-Type: application/json' \
+            -d '{"sensors":{"soilMoisture":48,"temperature":29,"humidity":64},"robot":{"status":"online"},"location":{"latitude":19.04,"longitude":72.87}}' \
+            http://127.0.0.1:5000/api/robot/data | jq -e '.success == true'
+          curl --fail --silent -H "Authorization: Bearer $token" \
+            http://127.0.0.1:5000/api/robot/dashboard | jq -e '.data.sensors.soilMoisture == 48'
+
+  website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
+      - run: flutter build apk --release --no-pub
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agribot-android-apk
+          path: flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  pi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n pi/install.sh
+      - run: python3 -m compileall -q pi ai/scripts

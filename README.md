@@ -65,11 +65,11 @@ Protected dashboard and Socket.IO connections
 
 ## Technology Stack
 
-Versions below are taken from the current `package.json` files. Node.js itself is not pinned by an `engines` field; use a current Node.js LTS release. The backend uses built-in `fetch`, so Node.js 18+ is the practical minimum.
+Use Node.js 22 LTS (recorded in `.nvmrc`) and Flutter 3.47.1 / Dart 3.13.1, matching CI. The backend requires Node.js 20.19.0 or newer because of Mongoose and the MongoDB driver.
 
 ### Backend
 
-- Node.js LTS: JavaScript runtime. Node 18+ is recommended because the simulator uses built-in `fetch`.
+- Node.js 22 LTS: JavaScript runtime; minimum supported version is 20.19.0.
 - Express `^5.2.1`: HTTP server and API routes.
 - Mongoose `^9.10.1`: MongoDB connection and schemas.
 - dotenv `^18.0.1`: Loads local backend environment variables.
@@ -81,7 +81,7 @@ Versions below are taken from the current `package.json` files. Node.js itself i
 
 ### Farmer app (Flutter)
 
-- Flutter 3.47+ and Dart 3.13+.
+- Flutter 3.47.1 and its bundled Dart 3.13.1.
 - `provider`: app state.
 - `http` and `socket_io_client`: REST and live Socket.IO updates.
 - `flutter_secure_storage`: stores the farmer JWT in the Keychain or Keystore.
@@ -94,8 +94,8 @@ Versions below are taken from the current `package.json` files. Node.js itself i
 Install the following before cloning or running the project:
 
 1. Git.
-2. Node.js LTS (20 or newer) and npm, for the backend.
-3. Flutter SDK, for the app. On a Mac add Xcode for iPhone builds, and Android Studio for Android builds.
+2. Node.js 22 LTS and npm, for the backend and website. With nvm, run `nvm install` then `nvm use` in the repository root.
+3. Flutter 3.47.1, for the app. For Android, install Android Studio, JDK 17, Android SDK Platform 36, Build-Tools 36.0.0, and NDK 28.2.13676358. For iPhone builds, use macOS with Xcode and CocoaPods.
 4. A MongoDB database: MongoDB Atlas, or MongoDB Community Server locally.
 5. Visual Studio Code, recommended.
 
@@ -103,17 +103,17 @@ Do not commit `node_modules`, Flutter `build/` output, or `.env` files. The `.gi
 
 ## Clone the Repository
 
-Use the repository URL supplied by your team:
+The repository is public. Use HTTPS; cloning this URL does not require an SSH key or a collaborator invitation:
 
 ```powershell
-git clone <YOUR-GITHUB-REPOSITORY-URL>
-cd AgriBot
+git clone https://github.com/rayyanshaikh123/agribot.git
+cd agribot
 ```
 
 The project folders are independent:
 
 ```text
-AgriBot/
+agribot/
 ├── backend/       Node.js API (npm)
 ├── flutter_app/   Farmer app (Flutter)
 ├── pi/            Raspberry Pi service (Python)
@@ -121,16 +121,35 @@ AgriBot/
 └── docs/          Wiring and pin mapping
 ```
 
+If cloning fails:
+
+- `Permission denied (publickey)`: use the HTTPS command above instead of `git@github.com:...`.
+- `Could not resolve host`, connection timeout or TLS errors: check your network/proxy and Git installation. Try another network. Do not disable SSL verification.
+- `destination path 'agribot' already exists`: use the existing checkout with `cd agribot` and `git pull --ff-only`, or clone into a different new folder.
+- For an interrupted download on a slow connection, try `git clone --depth 1 https://github.com/rayyanshaikh123/agribot.git`.
+
+There are no submodules or Git LFS downloads. The AI weights are separate and are **not needed to build the phone app**, run the backend or build the website.
+
 ## Farmer App Installation
 
 ```bash
 cd flutter_app
-flutter pub get
+flutter --version                        # use Flutter 3.47.1
+flutter doctor -v
+flutter doctor --android-licenses         # Android only; accept the SDK licenses
+flutter pub get --enforce-lockfile
+flutter devices
 flutter run -d <your-phone>               # debug, with hot reload
 flutter run --release -d <your-phone>     # install for everyday use
 ```
 
 Bluetooth works in every build, so no special build is needed. On iPhone, allow **Local Network** and **Bluetooth** when iOS asks.
+
+For an Android APK, run `flutter build apk --release` from `flutter_app`. The output is `flutter_app/build/app/outputs/flutter-apk/app-release.apk`. It uses a local debug signing key for team testing; Play Store publishing requires your own release signing configuration.
+
+Every push to `main` and pull request runs [build checks](https://github.com/rayyanshaikh123/agribot/actions/workflows/ci.yml). After a successful run, open it and download **agribot-android-apk** from **Artifacts** (GitHub sign-in required). This lets teammates install the app without setting up Flutter locally.
+
+See [the app build guide](flutter_app/README.md#build-from-a-fresh-clone) for Java, Android SDK and iPhone setup. No Pi, model weights or backend credentials are needed to compile the app.
 
 ## Backend Installation
 
@@ -138,7 +157,7 @@ From the repository root:
 
 ```powershell
 cd backend
-npm install
+npm ci
 ```
 
 Available scripts from the actual backend `package.json`:
@@ -165,7 +184,7 @@ The backend is configured to use:
 mongodb://127.0.0.1:27017/agribot
 ```
 
-The `agribot` database and application collections are created or used naturally when the backend writes data. This project uses local MongoDB Community Server, not MongoDB Atlas.
+The `agribot` database and application collections are created when the backend writes data. Use this URI for local MongoDB Community Server, or replace `MONGODB_URI` with your team's MongoDB Atlas connection string.
 
 ## Environment Variables
 
@@ -175,6 +194,8 @@ The safe template is [backend/.env.example](backend/.env.example). Create the re
 cd backend
 Copy-Item .env.example .env
 ```
+
+On macOS/Linux, use `cp .env.example .env` instead of `Copy-Item`.
 
 Open `backend/.env` locally and replace the placeholder values. Never paste real values into the repository or into documentation.
 
@@ -219,7 +240,7 @@ Start the backend first.
 ### Terminal 1: backend
 
 ```powershell
-cd AgriBot\backend
+cd agribot\backend
 npm run dev
 ```
 
@@ -420,7 +441,7 @@ The app draws the map natively with `flutter_map` and OpenStreetMap tiles. The t
 
 - [ ] Node.js LTS and the Flutter SDK are installed.
 - [ ] A MongoDB database is available (Atlas or local).
-- [ ] `npm install` completed in `backend`.
+- [ ] `npm ci` completed in `backend`.
 - [ ] `backend/.env` was created from `.env.example`.
 - [ ] Backend starts with `npm run dev`, and `GET /api/health` reports `"database":"connected"`.
 - [ ] `flutter pub get` completed in `flutter_app`.
@@ -515,8 +536,13 @@ The simulator or hardware must send the `x-robot-key` header. The value must mat
 
 ### Flutter build problems
 
-- Run `flutter doctor` and fix anything it reports.
+- Use Flutter 3.47.1 and run `flutter doctor -v`. An older Flutter SDK may fail on the Android Gradle Plugin 9 configuration even if Dart dependencies resolve.
+- `No Android SDK found`: install Android Studio's SDK tools and configure the SDK path with `flutter config --android-sdk <sdk-path>`.
+- Install Android Platform 36, Build-Tools 36.0.0 and NDK 28.2.13676358 in Android Studio's SDK Manager; then run `flutter doctor --android-licenses`.
+- Java/Gradle compatibility errors: select JDK 17 with `flutter config --jdk-dir <jdk-17-home>`, then rerun `flutter doctor -v`. Do not use Java 8 or 11.
+- Dependency lockfile mismatch: use the documented Flutter version before running `flutter pub get --enforce-lockfile`. Keep the lockfile committed.
 - iPhone: open `flutter_app/ios/Runner.xcworkspace` once in Xcode and pick your signing team.
+- See [the app build guide](flutter_app/README.md#build-from-a-fresh-clone) for full commands and iOS bundle identifier setup.
 - Android: Bluetooth needs Android 6 (SDK 23) or newer.
 
 ### `npm install` problems
@@ -632,10 +658,11 @@ Use Raspberry Pi OS Bookworm or newer, 64-bit, because it uses NetworkManager. C
 ```bash
 # On the laptop, from the ai/ folder:
 python scripts/export_onnx.py
-scp models/weights/best.onnx PI_USER@PI_IP:~/AgriBot-Smart_Farming/ai/models/weights/
+ssh PI_USER@PI_IP 'mkdir -p ~/agribot/ai/models/weights'
+scp models/weights/best.onnx PI_USER@PI_IP:~/agribot/ai/models/weights/
 
 # On the Pi:
-cd ~/AgriBot-Smart_Farming/pi
+cd ~/agribot/pi
 cp agribot.env.example agribot.env      # set ROBOT_INGEST_KEY and the robot location
 sudo ./install.sh
 ```
@@ -769,7 +796,7 @@ Keep machine-specific and sensitive files local. Do not commit `node_modules`, `
 
 1. Install Git, Node.js LTS, the Flutter SDK, and VS Code. Use MongoDB Atlas or a local MongoDB.
 2. Clone the repository and `cd` into it.
-3. Run `cd backend && npm install`, then copy `.env.example` to `.env` and fill in private values.
+3. Run `cd backend` then `npm ci`, then copy `.env.example` to `.env` and fill in private values.
 4. Run `npm run dev` and open `http://localhost:5000/api/health`.
 5. Run `cd ../flutter_app && flutter pub get && flutter run -d <your-phone>`.
 6. On the login screen, set **Server** to your laptop's address, then sign up.
