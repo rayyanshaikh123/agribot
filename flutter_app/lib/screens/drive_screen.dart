@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
@@ -14,6 +15,11 @@ import '../widgets/common.dart';
 
 /// Full-screen remote control: live camera behind, sensor chips on top,
 /// joystick + stop at the bottom. Talks to the Pi directly over Wi-Fi.
+///
+/// Arm panel: hold Up/Down to move the pH-probe arm (elbow + wrist together, in
+/// short capped nudges); releasing stops it. Only enabled when the robot reports
+/// ARM_APP_CONTROL=true and an arm mode that allows motion, and a token is set
+/// (long-press "ARM").
 class DriveScreen extends StatefulWidget {
   const DriveScreen({super.key});
 
@@ -44,10 +50,20 @@ class _DriveScreenState extends State<DriveScreen> {
   Timer? _driveTimer, _sensorTimer;
   bool _alive = true;
 
+  static const _storage = FlutterSecureStorage();
+  static const _armTokenKey = 'agribot_arm_token';
+  Map<String, dynamic>? _arm; // GET /arm from the Pi, null if unsupported/unreachable
+  String? _armHeld; // 'up' | 'down' while a button is held
+  String? _armError;
+  String _armToken = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
+    _storage.read(key: _armTokenKey).then((value) {
+      if (mounted && value != null) setState(() => _armToken = value);
+    });
   }
 
   String? _robotIp() => context.read<BleController>().status?.ip ?? context.read<RobotController>().presence?.ip;
@@ -102,6 +118,186 @@ class _DriveScreenState extends State<DriveScreen> {
     } catch (_) {
       if (_alive) setState(() => _reachable = false);
     }
+    // Separate request: older Pi software has no /arm and must not break driving.
+    try {
+      final arm = await pi.arm();
+      if (_alive) setState(() => _arm = arm);
+    } catch (_) {
+      if (_alive) setState(() => _arm = null);
+    }
+  }
+
+  Map get _armControls => (_arm?['controls'] as Map?) ?? const {};
+
+  bool get _armEnabled => _pi != null && _armControls['appControl'] == true && _armControls['nudgeAllowed'] == true && _armToken.isNotEmpty;
+
+  String get _armHint {
+    if (_arm == null) return 'Arm unavailable';
+    if (_armControls['nudgeAllowed'] != true) return 'Arm ${_arm!['status'] ?? 'off'}';
+    if (_armControls['appControl'] != true) return 'App control off';
+    if (_armToken.isEmpty) return 'Long-press ARM to set token';
+    if (_armError != null) return _armError!;
+    if (_armControls['driveLocked'] == true) return 'Wheels locked: confirm Arm Raised';
+    return 'Hold to move';
+  }
+
+  /// Enabled only when the robot says a confirmation can be checked (ESP32 connected,
+  /// manual mode, nothing running), the wheels are locked by the arm, and a token is set.
+  bool get _raisedEnabled =>
+      _pi != null &&
+      _armHeld == null &&
+      _armToken.isNotEmpty &&
+      _armControls['appControl'] == true &&
+      _armControls['confirmRaisedAllowed'] == true &&
+      _armControls['driveLocked'] == true;
+
+  Future<void> _confirmRaised() async {
+    final pi = _pi;
+    if (pi == null || !_raisedEnabled) return;
+    var checked = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Confirm arm raised'),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text(
+              'AgriBot cannot measure where the arm is. Only continue if you can see the robot right now '
+              'and have checked that:\n\n'
+              '• the arm is fully raised,\n'
+              '• the pH probe is clear of the ground,\n'
+              '• nothing on the arm is moving.\n\n'
+              'Confirming unlocks the wheels. The robot rejects it if the arm controller is offline or a servo is still running.',
+            ),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: checked,
+              onChanged: (value) => setDialogState(() => checked = value ?? false),
+              title: const Text('I have visually checked the arm and probe'),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            TextButton(onPressed: checked ? () => Navigator.pop(context, true) : null, child: const Text('Confirm')),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await pi.armConfirmRaised(_armToken);
+      if (!mounted) return;
+      setState(() => _armError = null);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Arm confirmed raised. Wheels unlocked.')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Not confirmed, wheels stay locked: ${e.toString().replaceFirst('Exception: ', '')}')),
+      );
+    }
+    _pollStatus();
+  }
+
+  Widget _raisedButton() {
+    final enabled = _raisedEnabled;
+    return Semantics(
+      button: true,
+      label: 'Confirm arm raised',
+      child: GestureDetector(
+        onTap: enabled ? _confirmRaised : null,
+        child: Container(
+          width: 76,
+          margin: const EdgeInsets.only(top: 2, bottom: 2),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            border: Border.all(color: enabled ? AgriColors.mint : Colors.white24),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            'Arm Raised',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: enabled ? AgriColors.mint : Colors.white38, fontSize: 11, fontWeight: FontWeight.w800),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Repeats short capped nudges while the button is held; each one ends by itself on the Pi.
+  Future<void> _armHold(String direction) async {
+    final pi = _pi;
+    if (pi == null || !_armEnabled || _armHeld != null) return;
+    HapticFeedback.selectionClick();
+    setState(() {
+      _armHeld = direction;
+      _armError = null;
+    });
+    while (_alive && _armHeld == direction && identical(pi, _pi)) {
+      try {
+        await pi.armNudge(direction, _armToken);
+      } catch (e) {
+        // A request refused just after release (stop latch) is expected: ignore it.
+        if (_alive && _armHeld == direction) {
+          setState(() {
+            _armError = e.toString().replaceFirst('Exception: ', '');
+            _armHeld = null;
+          });
+          pi.armStop().catchError((_) => <String, dynamic>{});
+        }
+        break;
+      }
+    }
+  }
+
+  void _armRelease() {
+    if (_armHeld == null) return;
+    setState(() => _armHeld = null);
+    _pi?.armStop().catchError((_) => <String, dynamic>{});
+  }
+
+  Future<void> _editArmToken() async {
+    final controller = TextEditingController(text: _armToken);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Arm control token'),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          decoration: const InputDecoration(hintText: 'AGRIBOT_LOCAL_TOKEN on the robot'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null) return;
+    await _storage.write(key: _armTokenKey, value: value);
+    if (mounted) setState(() => _armToken = value);
+  }
+
+  Widget _armButton(String direction, IconData icon) {
+    final enabled = _armEnabled;
+    final active = _armHeld == direction;
+    return Semantics(
+      button: true,
+      label: direction == 'up' ? 'Arm up (hold)' : 'Arm down (hold)',
+      child: Listener(
+        onPointerDown: enabled ? (_) => _armHold(direction) : null,
+        onPointerUp: (_) => _armRelease(),
+        onPointerCancel: (_) => _armRelease(),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          width: 76,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(color: active ? AgriColors.mint : Colors.transparent, borderRadius: BorderRadius.circular(16)),
+          child: Icon(icon, size: 26, color: !enabled ? Colors.white38 : active ? AgriColors.forest : Colors.white),
+        ),
+      ),
+    );
   }
 
   Future<void> _sendDrive() async {
@@ -125,9 +321,13 @@ class _DriveScreenState extends State<DriveScreen> {
 
   void _emergencyStop() {
     HapticFeedback.heavyImpact();
-    setState(() => _stick = Offset.zero);
+    setState(() {
+      _stick = Offset.zero;
+      _armHeld = null;
+    });
     _sentZero = true;
     _pi?.stop().catchError((_) => <String, dynamic>{});
+    _pi?.armStop().catchError((_) => <String, dynamic>{}); // STOP also stops the arm
   }
 
   @override
@@ -135,8 +335,14 @@ class _DriveScreenState extends State<DriveScreen> {
     _alive = false;
     _driveTimer?.cancel();
     _sensorTimer?.cancel();
+    _armHeld = null;
     final pi = _pi;
-    if (pi != null) pi.stop().whenComplete(pi.close).catchError((_) => <String, dynamic>{});
+    if (pi != null) {
+      Future.wait([
+        pi.stop().catchError((_) => <String, dynamic>{}),
+        pi.armStop().catchError((_) => <String, dynamic>{}),
+      ]).whenComplete(pi.close);
+    }
     super.dispose();
   }
 
@@ -283,6 +489,36 @@ class _DriveScreenState extends State<DriveScreen> {
                   ),
                   const Spacer(),
                   Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.end, children: [
+                    _Glass(
+                      radius: 20,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          GestureDetector(
+                            onLongPress: _editArmToken,
+                            child: const Padding(
+                              padding: EdgeInsets.only(top: 4, bottom: 2),
+                              child: Text('ARM', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1)),
+                            ),
+                          ),
+                          _armButton('up', Icons.keyboard_arrow_up),
+                          _armButton('down', Icons.keyboard_arrow_down),
+                          _raisedButton(),
+                          SizedBox(
+                            width: 76,
+                            child: Text(
+                              _armHint,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: AgriColors.textOnDarkMuted, fontSize: 9, height: 1.2),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                        ]),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                     _Glass(
                       radius: 20,
                       child: Padding(
