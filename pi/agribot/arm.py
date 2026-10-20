@@ -325,8 +325,15 @@ class Arm:
             self._fault(str(event.get("msg") or event))
 
     # --- motion primitives ------------------------------------------------------------
+    def _check_abort(self):
+        """A stop requested since this operation began wins over the next command."""
+        if self._abort.is_set():
+            self._safe_stop()
+            raise ArmError("stopped by request")
+
     def _move(self, axis, speed, ms):
         """Run one bounded move and wait until the ESP32 reports it finished."""
+        self._check_abort()
         self.link.request("MOVE", axis, int(speed), int(ms))
         deadline = time.monotonic() + ms / 1000 + 2.0
         while True:
@@ -344,6 +351,7 @@ class Arm:
 
     def _move2(self, speed1, speed2, ms):
         """Start both servos in the same instant and wait until both have stopped."""
+        self._check_abort()
         self.link.request("MOVE2", int(speed1), int(speed2), int(ms))
         moved = [axis for axis, speed in ((1, speed1), (2, speed2)) if speed]
         deadline = time.monotonic() + ms / 1000 + 2.0
@@ -413,6 +421,7 @@ class Arm:
 
         def run():
             try:
+                self._check_abort()  # a stop between _begin and here must not be re-armed away
                 self.link.request("ARM", 1)
                 outcome = body()
             except (ArmError, Esp32Error, RuntimeError, KeyError, TypeError) as error:

@@ -180,7 +180,7 @@ disarms on STOP, bad input or 2.5 s without Pi traffic, and caps every move at 3
    (probe tip clear of the table). **Keep hands and cables clear of the arm whenever it is powered.**
 2. Servo supply with an accessible switch. First tests: servo horns/linkage **disconnected** if possible.
 3. Flash the firmware (`esp32/README.md`), `ESP32_ENABLED=true`, restart; `agribotctl.py esp32`
-   → `connected: true`, `firmware: agribot-esp32/1.3`. Still `ARM_MODE=disabled`: confirm
+   → `connected: true`, `firmware: agribot-esp32/1.4`. Still `ARM_MODE=disabled`: confirm
    `agribotctl.py jog 1 10 100` is refused.
 4. Set `ARM_MODE=manual` (keep `ARM_COMMISSIONED=false`), restart. Test **one servo at a time**.
 

@@ -30,6 +30,21 @@ used to find 96 and 92 attached the servos with a different range, change
 
 ## Build and flash
 
+**Use `esp32/flash.sh`** (operator present). It builds for **ESP32 Dev Module** (`esp32:esp32:esp32`,
+4 MB flash), refuses unless the port is free, you type `FLASH` (servo power off or arm clear) and
+`esptool` reports a plain `ESP32`, then uploads and checks the boot line
+(`{"ev":"boot","fw":"agribot-esp32/1.4","proto":3,...}`):
+
+```bash
+sudo systemctl stop agribot            # only needed if ESP32_ENABLED=true (service holds the port)
+cd ~/Desktop/rc_car/AgriBot-Smart_Farming && bash esp32/flash.sh
+sudo systemctl start agribot
+```
+
+Stop values and directions sent by the Pi (`TRIM`/`DIR`, from `ARM_SERVO*_STOP` / `ARM_SERVO*_DIR`)
+are saved in the ESP32's flash and used from the next power-up, so a commissioned neutral is in
+effect before the Pi connects. Manual equivalent of the script:
+
 The toolchain is installed on the Pi (`arduino-cli`, core `esp32:esp32` 3.3.x,
 library `ESP32Servo` 3.2.x). Stop the service first so nothing else holds the port,
 and keep the arm clear: the board resets during flashing.
@@ -50,7 +65,7 @@ Checked 2026-10-21 without opening the port: the CP2102 is enumerated (10c4:ea60
 `/dev/ttyUSB0`) and nothing holds it open. What is currently flashed on the board is unknown;
 the Pi never sends anything but `PING` to a board that does not identify as AgriBot firmware.
 
-## Protocol v3 (firmware agribot-esp32/1.3)
+## Protocol v3 (firmware agribot-esp32/1.4)
 
 Serial 115200 8N1, newline-terminated lines.
 

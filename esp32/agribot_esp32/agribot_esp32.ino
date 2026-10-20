@@ -28,17 +28,22 @@
 
 #include <Arduino.h>
 #include <ESP32Servo.h>
+#include <Preferences.h>
 
-static const char *FIRMWARE = "agribot-esp32/1.3";
+static const char *FIRMWARE = "agribot-esp32/1.4";
 static const int PROTOCOL = 3;  // bump on incompatible protocol changes
 
 // ---- Wiring (ESP32 GPIO numbers, unrelated to the Pi's GPIO numbers) --------
 static const int PH_PIN = 34;    // pH interface board analog out (ADC1, input-only pin)
 static const int SOIL_PIN = 35;  // optional soil-moisture analog out (ADC1, input-only pin)
-static const int SERVO1_PIN = 26;
+static const int SERVO1_PIN = 26;   // servo 1 = ELBOW
 static const int SERVO1_STOP = 96;  // provisional neutral for servo 1 - never swap (Pi may TRIM it)
-static const int SERVO2_PIN = 25;
+static const int SERVO2_PIN = 25;   // servo 2 = WRIST
 static const int SERVO2_STOP = 92;  // provisional neutral for servo 2 - never swap (Pi may TRIM it)
+// Stop values and directions sent by the Pi (TRIM/DIR) are saved in flash
+// (NVS namespace "agribot") and used from the next power-up, so a commissioned
+// neutral is active even before the Pi connects. The constants above are only
+// the first-boot defaults.
 static const int TRIM_MIN = 70;     // allowed range for runtime stop-value changes
 static const int TRIM_MAX = 110;
 static const int RAW_MAX_OFFSET = 10;  // RAW test pulses stay within stop +/- this
@@ -85,6 +90,9 @@ static size_t lineLen = 0;
 static bool lineOverflow = false;
 static uint32_t lastRxMs = 0;
 static bool armed = false;  // motion permission from the Pi
+static Preferences prefs;
+static const char *STOP_KEYS[2] = {"stop1", "stop2"};
+static const char *DIR_KEYS[2] = {"dir1", "dir2"};
 static uint32_t phSeq = 0;
 
 // ---------------------------------------------------------------------------
@@ -254,6 +262,7 @@ static void cmdTrim(long id, char *args) {
   if (!parseLong(strtok(nullptr, " "), value) || value < TRIM_MIN || value > TRIM_MAX) return replyError(id, "stop value 70..110");
   Axis &a = axes[index];
   if (a.moving) return replyError(id, "axis busy");
+  if (a.stopValue != (int)value) prefs.putInt(STOP_KEYS[index], (int)value);  // write only on change
   a.stopValue = (int)value;
   writeStop(a);
   Serial.printf("{\"id\":%ld,\"ok\":true,\"axis\":%d,\"stop\":%d}\n", id, index + 1, a.stopValue);
@@ -267,7 +276,10 @@ static void cmdDir(long id, char *args) {
   if (!parseLong(strtok(nullptr, " "), dir) || (dir != 1 && dir != -1)) return replyError(id, "dir must be 1 or -1");
   Axis &a = axes[index];
   if (a.moving) return replyError(id, "axis busy");
-  if (a.dir != (int)dir) a.homed = false;  // estimate sign changes meaning
+  if (a.dir != (int)dir) {
+    a.homed = false;  // estimate sign changes meaning
+    prefs.putInt(DIR_KEYS[index], (int)dir);
+  }
   a.dir = (int)dir;
   Serial.printf("{\"id\":%ld,\"ok\":true,\"axis\":%d,\"dir\":%d}\n", id, index + 1, a.dir);
 }
@@ -447,6 +459,12 @@ static void updateMotion() {
   if ((anyMoving || armed) && now - lastRxMs > COMM_TIMEOUT_MS) disarm("comm_timeout");
 }
 
+// Saved neutral for an axis, or the compiled default if none/out of range.
+static int savedStop(int index, int fallback) {
+  int value = prefs.getInt(STOP_KEYS[index], fallback);
+  return (value >= TRIM_MIN && value <= TRIM_MAX) ? value : fallback;
+}
+
 static void initAxis(Axis &a, int pin, int stopValue) {
   a.pin = pin;
   a.stopValue = stopValue;
@@ -469,8 +487,10 @@ static void initAxis(Axis &a, int pin, int stopValue) {
 
 void setup() {
   // Servos first: command the calibrated stop values before anything else.
-  initAxis(axes[0], SERVO1_PIN, SERVO1_STOP);
-  initAxis(axes[1], SERVO2_PIN, SERVO2_STOP);
+  prefs.begin("agribot", false);  // before attaching: no pulses are output yet
+  initAxis(axes[0], SERVO1_PIN, savedStop(0, SERVO1_STOP));
+  initAxis(axes[1], SERVO2_PIN, savedStop(1, SERVO2_STOP));
+  for (int i = 0; i < 2; i++) axes[i].dir = prefs.getInt(DIR_KEYS[i], 1) == -1 ? -1 : 1;
 
   analogReadResolution(12);
   analogSetPinAttenuation(PH_PIN, ADC_11db);    // ~0.15-3.1 V usable; never exceed 3.3 V
