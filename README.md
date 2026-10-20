@@ -147,7 +147,7 @@ Bluetooth works in every build, so no special build is needed. On iPhone, allow 
 
 For an Android APK, run `flutter build apk --release` from `flutter_app`. The output is `flutter_app/build/app/outputs/flutter-apk/app-release.apk`. It uses a local debug signing key for team testing; Play Store publishing requires your own release signing configuration.
 
-Every push to `main` and pull request runs [build checks](https://github.com/rayyanshaikh123/agribot/actions/workflows/ci.yml). After a successful run, open it and download **agribot-android-apk** from **Artifacts** (GitHub sign-in required). This lets teammates install the app without setting up Flutter locally.
+Every push to `main` and pull request runs [build checks](https://github.com/rayyanshaikh123/agribot/actions/workflows/ci.yml): backend startup/auth/ingestion, website build, Flutter `analyze` and `test`, and Pi syntax checks. CI does not build or publish app packages; the app targets iOS and is built on macOS with Xcode (see `flutter_app/README.md`).
 
 See [the app build guide](flutter_app/README.md#build-from-a-fresh-clone) for Java, Android SDK and iPhone setup. No Pi, model weights or backend credentials are needed to compile the app.
 
