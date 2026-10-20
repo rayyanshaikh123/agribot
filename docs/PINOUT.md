@@ -4,7 +4,7 @@ This is the wiring for every module on the AgriBot Raspberry Pi: sensors, the an
 
 ![AgriBot Raspberry Pi 40-pin wiring](pi-pinout.svg)
 
-> **Motor driver pins need checking.** The motors are driven by a separate script, `ps5.py`, that lives only on the Pi and is not in this repository. The L298N mapping below is a recommended layout that avoids every sensor pin and uses the Pi's hardware PWM pins for speed. If your `ps5.py` uses different pins, either rewire to this layout or edit `PINS` in [generate_pinout.py](generate_pinout.py) and run it again.
+> **Current state (2026-10-21):** the motors are driven by `agribot.service` itself (app + PS5 controller) on the L298N pins below. The old standalone `pi/ps5.py`/`pi/controls.py` scripts use other pins and must not be run alongside the service. The pH probe and the probe arm are on the **ESP32** (USB), not on the MCP3008. **GPIO24 (DHT22) is currently also claimed by the SPI LCD overlay**, see [COMMISSIONING.md](COMMISSIONING.md) §2.1, as is SPI0 CE0 (the MCP3008 slot below). Physical checks still open are listed there too.
 
 ## Safety rules
 
@@ -25,10 +25,10 @@ This is the wiring for every module on the AgriBot Raspberry Pi: sensors, the an
 | MCP3008 ADC | DIN | Pi MOSI | 19 | GPIO 10 | |
 | MCP3008 ADC | CS/SHDN | Pi CE0 | 24 | GPIO 8 | |
 | Capacitive soil moisture | VCC / GND | Pi 3V3 / GND | 1 / 6 | — | Share pin 1 and pin 6 via the breadboard rails |
-| Capacitive soil moisture | AO | MCP3008 **CH0** | — | — | `SOIL_ADC_CHANNEL=0` |
-| pH probe (future) | AO | MCP3008 **CH2** | — | — | `PH_ADC_CHANNEL=2`. Check its output never exceeds 3.3 V. |
+| Capacitive soil moisture | AO | MCP3008 **CH0** | — | — | Not installed yet. Planned options: `SOIL_SENSOR=mcp3008` (needs SPI0 CE0, currently used by the LCD), `SOIL_SENSOR=esp32` (AO → ESP32 GPIO35, simplest), or `SOIL_SENSOR=digital` (DO → a free Pi GPIO) |
+| pH probe | AO | **ESP32 GPIO34** | — | — | Read by the ESP32, not the Pi. See [esp32/README.md](../esp32/README.md) for the voltage check |
 | DHT22 | VCC / GND | Pi 3V3 / GND | 17 / 14 | — | |
-| DHT22 | DATA | Pi GPIO | 18 | GPIO 24 | `DHT_PIN=24`. Add a 4.7–10 kΩ pull-up from DATA to 3V3 unless the breakout has one. |
+| DHT22 | DATA | Pi GPIO | 18 | GPIO 24 | `DHT_PIN=24`. Add a 4.7–10 kΩ pull-up from DATA to 3V3 unless the breakout has one. **Conflicts with the LCD overlay's `dc` line**: see COMMISSIONING.md §2.1 |
 | FC-37 rain module | VCC / GND | Pi 3V3 / GND | 17 / 9 | — | |
 | FC-37 rain module | DO | Pi GPIO | 13 | GPIO 27 | `RAIN_DO_PIN=27`. Reads LOW when wet (`RAIN_WET_DIGITAL_VALUE=0`). |
 | FC-37 rain module | AO | not connected | — | — | The service uses the digital wet/dry output only |

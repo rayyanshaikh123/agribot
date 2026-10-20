@@ -1,40 +1,62 @@
 """Motor control for the L298N, driven by a PS5 controller or the phone app.
 
-Pins follow docs/PINOUT.md. Speed is PWM on the IN pins, so it works with the
-ENA/ENB jumper caps left on (the enable GPIOs are then simply unconnected).
+Pins follow docs/PINOUT.md (left = IN1/IN2 + ENA, right = IN3/IN4 + ENB; the
+front and rear motor of each side share one L298N channel). Speed is PWM on the
+IN pins and the enable GPIOs are held high, so it works with the ENA/ENB jumper
+caps removed (as wired) or fitted.
 
-Safety: the motors stop when no command arrives for DRIVE_TIMEOUT_MS, when the
-controller disconnects, and when the service exits.
+Safety: the motors stop when no app command arrives for DRIVE_TIMEOUT_MS, when
+the controller disconnects, when the service exits, and on any stop request.
+A stop also latches for STOP_LATCH_SECONDS so a drive request that was already
+in flight cannot restart the wheels right after an emergency stop. Non-finite
+or non-numeric speeds are rejected. While the pH probe may be in the soil the
+arm interlock refuses motion (stop is always accepted).
 """
 
+import math
 import threading
 import time
 
 GAMEPAD_NAMES = ("dualsense", "wireless controller", "ps5", "playstation")
+STOP_LATCH_SECONDS = 0.4
+
+
+class DriveBlocked(RuntimeError):
+    pass
 
 
 def _clamp(value, low=-1.0, high=1.0):
-    return max(low, min(high, float(value)))
+    if isinstance(value, bool):
+        raise ValueError("speed must be a number")
+    value = float(value)  # ValueError/TypeError for junk
+    if not math.isfinite(value):
+        raise ValueError("speed must be a finite number")
+    return max(low, min(high, value))
 
 
 def arcade(throttle, turn):
     """Stick values (-1..1) to left/right wheel speeds (-1..1)."""
+    throttle, turn = _clamp(throttle), _clamp(turn)
     left, right = throttle + turn, throttle - turn
     peak = max(1.0, abs(left), abs(right))
     return left / peak, right / peak
 
 
 class Drive:
-    def __init__(self, config):
+    def __init__(self, config, motors=None):
         self.cfg = config
         self.error = None
+        self.block_reason = lambda: None  # set by the service (arm interlock)
+        self._stopped_at = 0.0
         self.left = self.right = 0.0
         self.source = None
         self.gamepad = None  # connected controller name
         self._last_command = 0.0
         self._gamepad_active_at = 0.0
         self._lock = threading.Lock()
-        self._motors = None
+        self._motors = motors  # tests inject fakes
+        if motors is not None:
+            return
         if not config.drive_enabled:
             self.error = "disabled by DRIVE_ENABLED=false"
             return
@@ -67,11 +89,22 @@ class Drive:
             else:
                 motor.stop()
 
+    @property
+    def moving(self):
+        return bool(self.left or self.right)
+
     def set(self, left, right, source="app"):
         """Set wheel speeds. The controller wins over the app while it is in use."""
         left, right = _clamp(left), _clamp(right)
+        if left or right:
+            reason = self.block_reason()
+            if reason:
+                self.stop()
+                raise DriveBlocked(f"Driving blocked: {reason}")
         with self._lock:
             now = time.monotonic()
+            if (left or right) and source != "gamepad" and now - self._stopped_at < STOP_LATCH_SECONDS:
+                return self.state()  # a stop was just requested; ignore stale motion
             if source == "gamepad":
                 if left or right:
                     self._gamepad_active_at = now
@@ -84,8 +117,11 @@ class Drive:
             self._apply(left, right)
             return self.state()
 
-    def stop(self):
+    def stop(self, latch=True):
+        """Stop both sides. latch=True (explicit stop) briefly ignores app motion."""
         with self._lock:
+            if latch:
+                self._stopped_at = time.monotonic()
             self.source = None
             self._apply(0.0, 0.0)
 
@@ -93,10 +129,22 @@ class Drive:
         return {"ready": self.ready, "left": round(self.left, 2), "right": round(self.right, 2), "source": self.source, "gamepad": self.gamepad, "error": self.error}
 
     # --- background loops ---------------------------------------------------
-    def _watchdog(self, stop):
+    def check_watchdog(self):
+        """Stop app-driven motion that has gone quiet. Returns True if it stopped."""
         timeout = self.cfg.drive_timeout_ms / 1000
+        if (self.left or self.right) and self.source == "app" and time.monotonic() - self._last_command > timeout:
+            self.stop(latch=False)
+            return True
+        return False
+
+    def _watchdog(self, stop):
         while not stop.wait(0.1):
-            if (self.left or self.right) and self.source == "app" and time.monotonic() - self._last_command > timeout:
+            try:
+                self.check_watchdog()
+                if (self.left or self.right) and self.block_reason():
+                    self.stop()
+            except Exception as error:  # keep the watchdog alive whatever happens
+                print(f"[drive] Watchdog error: {error!r}")
                 self.stop()
 
     def _find_gamepad(self, evdev):
@@ -149,7 +197,10 @@ class Drive:
                     turn = axes[codes.ABS_RX] if abs(axes[codes.ABS_RX]) > dead else axes[codes.ABS_X]
                     throttle = 0.0 if abs(throttle) < dead else throttle
                     turn = 0.0 if abs(turn) < dead else turn
-                    self.set(*arcade(throttle, turn), source="gamepad")
+                    try:
+                        self.set(*arcade(throttle, turn), source="gamepad")
+                    except DriveBlocked:
+                        pass  # interlock already stopped the wheels
             except OSError:
                 pass  # controller switched off or out of range
             finally:

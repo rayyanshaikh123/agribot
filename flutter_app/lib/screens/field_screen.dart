@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../core/crop_advice.dart';
 import '../core/format.dart';
+import '../core/sensor_labels.dart';
 import '../core/theme.dart';
 import '../models/robot.dart';
 import '../state/auth_controller.dart';
@@ -35,6 +36,10 @@ class _FieldScreenState extends State<FieldScreen> {
     final data = robot.dashboard ?? DashboardData.sample();
     final live = robot.dashboard != null;
     final s = data.sensors;
+    // Current sensor status reported by the Pi: label anything that is not a measurement.
+    final sensorStatus = robot.presence?.sensorStatus ?? const <String, String>{};
+    final badges = live ? metricBadges(sensorStatus) : const <String, String?>{};
+    final notice = live ? sensorNotice(sensorStatus) : null;
     final top = MediaQuery.paddingOf(context).top;
     final socketText = switch (robot.socketState) {
       SocketState.live => 'Live field data',
@@ -113,6 +118,17 @@ class _FieldScreenState extends State<FieldScreen> {
                   Expanded(child: Text('Showing sample values. ${robot.dashboardError.isEmpty ? 'Waiting for the first reading from AgriBot.' : robot.dashboardError}', style: const TextStyle(fontSize: 12, height: 1.4))),
                 ]),
               ),
+            if (notice != null)
+              Container(
+                margin: const EdgeInsets.only(top: 14),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: const Color(0xFFFBF1DD), borderRadius: BorderRadius.circular(18)),
+                child: Row(children: [
+                  const Icon(Icons.info, color: AgriColors.warning, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(notice, style: const TextStyle(fontSize: 12, height: 1.4))),
+                ]),
+              ),
             ...switch (_section) {
               _Section.overview => [
                   const SizedBox(height: 16),
@@ -122,15 +138,15 @@ class _FieldScreenState extends State<FieldScreen> {
                       scrollDirection: Axis.horizontal,
                       clipBehavior: Clip.none,
                       children: [
-                        MetricChip(icon: Icons.water_drop, label: 'Moisture', value: round1(s.soilMoisture), unit: '%'),
+                        MetricChip(icon: Icons.water_drop, label: 'Moisture', value: round1(s.soilMoisture), unit: '%', badge: badges['soilMoisture']),
                         const SizedBox(width: 10),
-                        MetricChip(icon: Icons.thermostat, label: 'Temperature', value: round1(s.temperature), unit: '°C'),
+                        MetricChip(icon: Icons.thermostat, label: 'Temperature', value: round1(s.temperature), unit: '°C', badge: badges['temperature']),
                         const SizedBox(width: 10),
-                        MetricChip(icon: Icons.cloud, label: 'Humidity', value: round1(s.humidity), unit: '%'),
+                        MetricChip(icon: Icons.cloud, label: 'Humidity', value: round1(s.humidity), unit: '%', badge: badges['humidity']),
                         const SizedBox(width: 10),
-                        MetricChip(icon: Icons.science, label: 'Acidity', value: s.ph == null ? '—' : 'pH ${s.ph!.toStringAsFixed(1)}'),
+                        MetricChip(icon: Icons.science, label: 'Acidity', value: s.ph == null ? '—' : 'pH ${s.ph!.toStringAsFixed(1)}', badge: badges['ph']),
                         const SizedBox(width: 10),
-                        MetricChip(icon: Icons.umbrella, label: 'Rain', value: s.rainfall >= 50 ? 'Wet' : 'Dry'),
+                        MetricChip(icon: Icons.umbrella, label: 'Rain', value: s.rainfall >= 50 ? 'Wet' : 'Dry', badge: badges['rainfall']),
                       ],
                     ),
                   ),
