@@ -3,6 +3,16 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+/// Error reply from the Pi. [statusCode] tells a refusal (e.g. 409: wheels locked
+/// by the arm, 403: not authorised) apart from the robot being unreachable.
+class PiException implements Exception {
+  PiException(this.statusCode, this.message);
+  final int statusCode;
+  final String message;
+  @override
+  String toString() => message;
+}
+
 /// Direct local-network client for the Pi's HTTP API (pi/agribot_service.py).
 /// Driving goes straight to the robot; the cloud backend is far too slow for it.
 class PiClient {
@@ -30,6 +40,12 @@ class PiClient {
           headers: {'Content-Type': 'application/json', 'X-AgriBot-Token': token}, body: jsonEncode({'direction': direction}))
       .timeout(const Duration(seconds: 3)));
 
+  /// Starts the robot's commissioned retract sequence (202 Accepted; poll [arm]).
+  /// The Pi only offers it (controls.retractAllowed) for a commissioned, homed arm.
+  Future<Map<String, dynamic>> armRetract(String token) async => _data(await _http
+      .post(Uri.parse('$base/arm/retract'), headers: {'Content-Type': 'application/json', 'X-AgriBot-Token': token}, body: jsonEncode({}))
+      .timeout(const Duration(seconds: 4)));
+
   /// Stops both arm servos. Always allowed, no token needed.
   Future<Map<String, dynamic>> armStop() => _post('/arm/stop', {});
 
@@ -50,7 +66,7 @@ class PiClient {
       .timeout(const Duration(seconds: 2)));
 
   Map<String, dynamic> _data(http.Response res) {
-    if (res.statusCode != 200) throw Exception(_message(res) ?? 'HTTP ${res.statusCode}');
+    if (res.statusCode < 200 || res.statusCode > 299) throw PiException(res.statusCode, _message(res) ?? 'HTTP ${res.statusCode}');
     return Map<String, dynamic>.from((jsonDecode(res.body) as Map)['data'] as Map);
   }
 

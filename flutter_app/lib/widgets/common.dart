@@ -67,10 +67,13 @@ class AgriCard extends StatelessWidget {
 }
 
 class MetricChip extends StatelessWidget {
-  const MetricChip({super.key, required this.icon, required this.label, required this.value, this.unit});
+  const MetricChip({super.key, required this.icon, required this.label, required this.value, this.unit, this.badge});
   final IconData icon;
   final String label, value;
   final String? unit;
+
+  /// Small warning label for values that are not measurements (e.g. "Simulated").
+  final String? badge;
   @override
   Widget build(BuildContext context) => Container(
         width: 112,
@@ -87,6 +90,10 @@ class MetricChip extends StatelessWidget {
               if (unit != null) TextSpan(text: unit, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AgriColors.textMuted)),
             ])),
           ),
+          if (badge != null) ...[
+            const SizedBox(height: 4),
+            Text(badge!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AgriColors.warning)),
+          ],
         ]),
       );
 }

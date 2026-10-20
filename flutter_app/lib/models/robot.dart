@@ -1,5 +1,7 @@
 // API models shared with the Express backend (backend/src/routes/robot.routes.js).
 
+import '../core/sensor_labels.dart';
+
 double _d(dynamic v, [double fallback = 0]) => v is num ? v.toDouble() : fallback;
 double? _dn(dynamic v) => v is num ? v.toDouble() : null;
 DateTime? _date(dynamic v) => v is String ? DateTime.tryParse(v) : null;
@@ -93,7 +95,19 @@ class CropScan {
 
 /// Heartbeat details the Pi reports (pi/agribot_service.py AgriBot.status).
 class RobotPresence {
-  RobotPresence({required this.online, this.lastSeenAt, this.camera, this.model = false, this.sensors, this.ble = false, this.ssid, this.ip, this.version});
+  RobotPresence({
+    required this.online,
+    this.lastSeenAt,
+    this.camera,
+    this.model = false,
+    this.sensors,
+    this.ble = false,
+    this.ssid,
+    this.ip,
+    this.version,
+    this.sensorStatus = const {},
+    this.demoMode = false,
+  });
   final bool online;
   final DateTime? lastSeenAt;
   final String? camera;
@@ -101,6 +115,13 @@ class RobotPresence {
   final String? sensors;
   final bool ble;
   final String? ssid, ip, version;
+
+  /// Per-sensor status from the Pi (soilMoisture, dht22, rainfall, ph): ok,
+  /// stale, simulated, placeholder, uncalibrated, ... Empty on older Pi software.
+  final Map<String, String> sensorStatus;
+
+  /// True while the Pi runs SENSOR_DEMO_MODE (simulated temperature/humidity).
+  final bool demoMode;
 
   factory RobotPresence.fromJson(Map<String, dynamic> j) {
     final info = Map<String, dynamic>.from((j['info'] as Map?) ?? {});
@@ -116,6 +137,8 @@ class RobotPresence {
       ssid: net['ssid'] as String?,
       ip: net['ip'] as String?,
       version: info['version'] as String?,
+      sensorStatus: parseSensorStatus(info['sensorStatus']),
+      demoMode: info['demoMode'] == true,
     );
   }
 }

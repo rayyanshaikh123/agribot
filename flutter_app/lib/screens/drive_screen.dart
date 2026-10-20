@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 
+import '../core/arm_controls.dart';
+import '../core/sensor_labels.dart';
 import '../core/theme.dart';
 import '../services/pi_client.dart';
 import '../state/ble_controller.dart';
@@ -14,12 +16,16 @@ import '../state/robot_controller.dart';
 import '../widgets/common.dart';
 
 /// Full-screen remote control: live camera behind, sensor chips on top,
-/// joystick + stop at the bottom. Talks to the Pi directly over Wi-Fi.
+/// arm panel and joystick + stop at the bottom. Talks to the Pi directly over Wi-Fi.
 ///
-/// Arm panel: hold Up/Down to move the pH-probe arm (elbow + wrist together, in
-/// short capped nudges); releasing stops it. Only enabled when the robot reports
-/// ARM_APP_CONTROL=true and an arm mode that allows motion, and a token is set
-/// (long-press "ARM").
+/// Driving: push the joystick (up = forward, down = reverse, left/right = turn);
+/// letting go sends zero, and the Pi also stops the wheels on its own if
+/// commands stop arriving. STOP stops wheels and arm.
+///
+/// Arm (pH probe): hold Up/Down to move the elbow (servo 1) and wrist (servo 2)
+/// together in short capped nudges; releasing stops both. The Pi and ESP32
+/// enforce every limit and timeout; this screen only offers what the robot
+/// reports as allowed (see core/arm_controls.dart).
 class DriveScreen extends StatefulWidget {
   const DriveScreen({super.key});
 
@@ -39,8 +45,10 @@ class _DriveScreenState extends State<DriveScreen> {
   String? _cameraError;
   bool _reachable = false;
   Map<String, dynamic>? _sensors;
+  Map<String, String> _sensorStatus = const {};
   String? _gamepad;
   String? _driveSource;
+  String? _driveBlocked; // the Pi's reason when it refuses to drive (e.g. arm interlock)
 
   Offset _stick = Offset.zero;
   bool _sentZero = true;
@@ -111,6 +119,7 @@ class _DriveScreenState extends State<DriveScreen> {
       if (!_alive) return;
       setState(() {
         _sensors = Map<String, dynamic>.from(results[0]['sensors'] as Map);
+        _sensorStatus = parseSensorStatus(results[0]['status']);
         _gamepad = results[1]['gamepad'] as String?;
         _driveSource = results[1]['source'] as String?;
         _reachable = true;
@@ -127,178 +136,7 @@ class _DriveScreenState extends State<DriveScreen> {
     }
   }
 
-  Map get _armControls => (_arm?['controls'] as Map?) ?? const {};
-
-  bool get _armEnabled => _pi != null && _armControls['appControl'] == true && _armControls['nudgeAllowed'] == true && _armToken.isNotEmpty;
-
-  String get _armHint {
-    if (_arm == null) return 'Arm unavailable';
-    if (_armControls['nudgeAllowed'] != true) return 'Arm ${_arm!['status'] ?? 'off'}';
-    if (_armControls['appControl'] != true) return 'App control off';
-    if (_armToken.isEmpty) return 'Long-press ARM to set token';
-    if (_armError != null) return _armError!;
-    if (_armControls['driveLocked'] == true) return 'Wheels locked: confirm Arm Raised';
-    return 'Hold to move';
-  }
-
-  /// Enabled only when the robot says a confirmation can be checked (ESP32 connected,
-  /// manual mode, nothing running), the wheels are locked by the arm, and a token is set.
-  bool get _raisedEnabled =>
-      _pi != null &&
-      _armHeld == null &&
-      _armToken.isNotEmpty &&
-      _armControls['appControl'] == true &&
-      _armControls['confirmRaisedAllowed'] == true &&
-      _armControls['driveLocked'] == true;
-
-  Future<void> _confirmRaised() async {
-    final pi = _pi;
-    if (pi == null || !_raisedEnabled) return;
-    var checked = false;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Confirm arm raised'),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text(
-              'AgriBot cannot measure where the arm is. Only continue if you can see the robot right now '
-              'and have checked that:\n\n'
-              '• the arm is fully raised,\n'
-              '• the pH probe is clear of the ground,\n'
-              '• nothing on the arm is moving.\n\n'
-              'Confirming unlocks the wheels. The robot rejects it if the arm controller is offline or a servo is still running.',
-            ),
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              value: checked,
-              onChanged: (value) => setDialogState(() => checked = value ?? false),
-              title: const Text('I have visually checked the arm and probe'),
-            ),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            TextButton(onPressed: checked ? () => Navigator.pop(context, true) : null, child: const Text('Confirm')),
-          ],
-        ),
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    try {
-      await pi.armConfirmRaised(_armToken);
-      if (!mounted) return;
-      setState(() => _armError = null);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Arm confirmed raised. Wheels unlocked.')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Not confirmed, wheels stay locked: ${e.toString().replaceFirst('Exception: ', '')}')),
-      );
-    }
-    _pollStatus();
-  }
-
-  Widget _raisedButton() {
-    final enabled = _raisedEnabled;
-    return Semantics(
-      button: true,
-      label: 'Confirm arm raised',
-      child: GestureDetector(
-        onTap: enabled ? _confirmRaised : null,
-        child: Container(
-          width: 76,
-          margin: const EdgeInsets.only(top: 2, bottom: 2),
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          decoration: BoxDecoration(
-            border: Border.all(color: enabled ? AgriColors.mint : Colors.white24),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text(
-            'Arm Raised',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: enabled ? AgriColors.mint : Colors.white38, fontSize: 11, fontWeight: FontWeight.w800),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Repeats short capped nudges while the button is held; each one ends by itself on the Pi.
-  Future<void> _armHold(String direction) async {
-    final pi = _pi;
-    if (pi == null || !_armEnabled || _armHeld != null) return;
-    HapticFeedback.selectionClick();
-    setState(() {
-      _armHeld = direction;
-      _armError = null;
-    });
-    while (_alive && _armHeld == direction && identical(pi, _pi)) {
-      try {
-        await pi.armNudge(direction, _armToken);
-      } catch (e) {
-        // A request refused just after release (stop latch) is expected: ignore it.
-        if (_alive && _armHeld == direction) {
-          setState(() {
-            _armError = e.toString().replaceFirst('Exception: ', '');
-            _armHeld = null;
-          });
-          pi.armStop().catchError((_) => <String, dynamic>{});
-        }
-        break;
-      }
-    }
-  }
-
-  void _armRelease() {
-    if (_armHeld == null) return;
-    setState(() => _armHeld = null);
-    _pi?.armStop().catchError((_) => <String, dynamic>{});
-  }
-
-  Future<void> _editArmToken() async {
-    final controller = TextEditingController(text: _armToken);
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Arm control token'),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          decoration: const InputDecoration(hintText: 'AGRIBOT_LOCAL_TOKEN on the robot'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Save')),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (value == null) return;
-    await _storage.write(key: _armTokenKey, value: value);
-    if (mounted) setState(() => _armToken = value);
-  }
-
-  Widget _armButton(String direction, IconData icon) {
-    final enabled = _armEnabled;
-    final active = _armHeld == direction;
-    return Semantics(
-      button: true,
-      label: direction == 'up' ? 'Arm up (hold)' : 'Arm down (hold)',
-      child: Listener(
-        onPointerDown: enabled ? (_) => _armHold(direction) : null,
-        onPointerUp: (_) => _armRelease(),
-        onPointerCancel: (_) => _armRelease(),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          width: 76,
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          decoration: BoxDecoration(color: active ? AgriColors.mint : Colors.transparent, borderRadius: BorderRadius.circular(16)),
-          child: Icon(icon, size: 26, color: !enabled ? Colors.white38 : active ? AgriColors.forest : Colors.white),
-        ),
-      ),
-    );
-  }
+  // --- driving --------------------------------------------------------------
 
   Future<void> _sendDrive() async {
     final pi = _pi;
@@ -312,6 +150,12 @@ class _DriveScreenState extends State<DriveScreen> {
       _sentZero = idle;
       _driveSource = state['source'] as String?;
       _reachable = true;
+      if (_driveBlocked != null && _alive) setState(() => _driveBlocked = null);
+    } on PiException catch (e) {
+      // Reachable, but the robot refused (409 = wheels locked by the arm interlock).
+      _reachable = true;
+      _sentZero = idle;
+      if (_alive && e.statusCode == 409) setState(() => _driveBlocked = e.message);
     } catch (_) {
       _reachable = false;
     } finally {
@@ -359,6 +203,120 @@ class _DriveScreenState extends State<DriveScreen> {
     };
   }
 
+  // --- arm ------------------------------------------------------------------
+
+  ArmPanelState get _armState => ArmPanelState.from(_pi == null ? null : _arm, hasToken: _armToken.isNotEmpty, error: _armError);
+
+  /// Repeats short capped nudges while the button is held; each one ends by itself on the Pi.
+  Future<void> _armHold(String direction) async {
+    final pi = _pi;
+    if (pi == null || !_armState.canNudge || _armHeld != null) return;
+    HapticFeedback.selectionClick();
+    setState(() {
+      _armHeld = direction;
+      _armError = null;
+    });
+    while (_alive && _armHeld == direction && identical(pi, _pi)) {
+      try {
+        await pi.armNudge(direction, _armToken);
+      } catch (e) {
+        // A request refused just after release (stop latch) is expected: ignore it.
+        if (_alive && _armHeld == direction) {
+          setState(() {
+            _armError = e.toString().replaceFirst('Exception: ', '');
+            _armHeld = null;
+          });
+          pi.armStop().catchError((_) => <String, dynamic>{});
+        }
+        break;
+      }
+    }
+    _pollStatus();
+  }
+
+  void _armRelease() {
+    if (_armHeld == null) return;
+    setState(() => _armHeld = null);
+    _pi?.armStop().catchError((_) => <String, dynamic>{});
+  }
+
+  Future<void> _editArmToken() async {
+    final value = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AgriColors.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(34))),
+      builder: (_) => _ArmTokenSheet(initial: _armToken),
+    );
+    if (value == null) return;
+    await _storage.write(key: _armTokenKey, value: value);
+    if (mounted) {
+      setState(() {
+        _armToken = value;
+        _armError = null;
+      });
+    }
+  }
+
+  Future<void> _confirmRaised() async {
+    final pi = _pi;
+    if (pi == null || !_armState.canConfirmRaised) return;
+    final confirmed = await _showArmConfirmSheet(
+      title: 'Confirm arm raised',
+      body: 'AgriBot cannot measure where the arm is. Only continue if you can see the robot right now and have checked that:',
+      checks: const ['The arm is fully raised', 'The pH probe is clear of the ground', 'Nothing on the arm is moving'],
+      footnote: 'This records your visual check and unlocks the wheels. It is not a position measurement. '
+          'The robot refuses it if the arm controller is offline or a servo is still running.',
+      action: 'Confirm and unlock wheels',
+    );
+    if (confirmed != true || !mounted) return;
+    await _runArmRequest(() => pi.armConfirmRaised(_armToken), success: 'Arm confirmed raised. Wheels unlocked.');
+  }
+
+  Future<void> _retract() async {
+    final pi = _pi;
+    if (pi == null || !_armState.canRetract) return;
+    final confirmed = await _showArmConfirmSheet(
+      title: 'Retract the arm',
+      body: "Runs the robot's commissioned retract sequence back to the rest pose. Before starting, check that:",
+      checks: const ['Hands and objects are clear of the arm', 'The robot is not moving'],
+      footnote: 'The position is an estimate from timed moves. Watch the arm and press STOP if anything looks wrong.',
+      action: 'Start retract',
+    );
+    if (confirmed != true || !mounted) return;
+    await _runArmRequest(() => pi.armRetract(_armToken), success: 'Retracting. Watch the arm; STOP stops it.');
+  }
+
+  Future<void> _runArmRequest(Future<Map<String, dynamic>> Function() request, {required String success}) async {
+    try {
+      await request();
+      if (!mounted) return;
+      setState(() => _armError = null);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Not done: ${e.toString().replaceFirst('Exception: ', '')}')));
+    }
+    _pollStatus();
+  }
+
+  Future<bool?> _showArmConfirmSheet({
+    required String title,
+    required String body,
+    required List<String> checks,
+    required String footnote,
+    required String action,
+  }) =>
+      showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: AgriColors.surface,
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(34))),
+        builder: (_) => _ArmConfirmSheet(title: title, body: body, checks: checks, footnote: footnote, action: action),
+      );
+
+  // --- layout ---------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     // Rebuild when the Pi's IP becomes known (BLE or heartbeat).
@@ -366,19 +324,25 @@ class _DriveScreenState extends State<DriveScreen> {
     context.watch<RobotController>();
     if (_ip == null && _robotIp() != null) WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
 
+    final badges = metricBadges(_sensorStatus);
     final chips = [
-      (Icons.thermostat, _reading('temperature'), '°C'),
-      (Icons.water_drop_outlined, _reading('humidity'), '%'),
-      (Icons.grass, _reading('soilMoisture'), '%'),
-      (Icons.umbrella_outlined, _reading('rainfall'), '%'),
+      (Icons.thermostat, _reading('temperature'), '°C', badges['temperature']),
+      (Icons.water_drop_outlined, _reading('humidity'), '%', badges['humidity']),
+      (Icons.grass, _reading('soilMoisture'), '%', badges['soilMoisture']),
+      (Icons.umbrella_outlined, _reading('rainfall'), '%', badges['rainfall']),
     ];
+    final notice = sensorNotice(_sensorStatus);
     final (statusText, tone) = _ip == null
         ? ('Robot IP unknown', PillTone.bad)
         : !_reachable
             ? ('Connecting to $_ip…', PillTone.warn)
-            : _driveSource == 'gamepad'
-                ? ('Controller driving', PillTone.good)
-                : ('Connected', PillTone.good);
+            : _driveBlocked != null
+                ? ('Wheels locked', PillTone.warn)
+                : _driveSource == 'gamepad'
+                    ? ('Controller driving', PillTone.good)
+                    : ('Connected', PillTone.good);
+    final width = MediaQuery.sizeOf(context).width;
+    final stickSize = math.min(168.0, width * 0.42);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light,
@@ -436,18 +400,18 @@ class _DriveScreenState extends State<DriveScreen> {
                 ]),
                 const SizedBox(height: 12),
                 Row(children: [
-                  for (final (icon, value, unit) in chips) ...[
+                  for (final (icon, value, unit, badge) in chips) ...[
                     Expanded(
                       child: _Glass(
                         radius: 16,
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
                           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                            Icon(icon, size: 14, color: AgriColors.mint),
+                            Icon(icon, size: 14, color: badge == null ? AgriColors.mint : AgriColors.warning),
                             const SizedBox(width: 4),
                             Flexible(
                               child: Text(
-                                value == null ? '—' : '${value.toStringAsFixed(0)}$unit',
+                                value == null ? '—' : '${value.toStringAsFixed(0)}$unit${badge == null ? '' : '*'}',
                                 maxLines: 1,
                                 style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
                               ),
@@ -459,27 +423,26 @@ class _DriveScreenState extends State<DriveScreen> {
                     if (icon != chips.last.$1) const SizedBox(width: 6),
                   ],
                 ]),
+                if (notice != null) ...[
+                  const SizedBox(height: 8),
+                  _GlassNote(icon: Icons.info_outline, text: '* $notice'),
+                ],
+                if (_driveBlocked != null) ...[
+                  const SizedBox(height: 8),
+                  _GlassNote(icon: Icons.lock_outline, text: _driveBlocked!),
+                ],
                 if (_gamepad != null) ...[
                   const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: _Glass(
-                      radius: 999,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          const Icon(Icons.sports_esports, size: 14, color: AgriColors.mint),
-                          const SizedBox(width: 6),
-                          Text(_gamepad!, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
-                        ]),
-                      ),
-                    ),
-                  ),
+                  _GlassNote(icon: Icons.sports_esports, text: _gamepad!),
                 ],
                 const Spacer(),
+                if (_pi != null) ...[
+                  _armPanel(),
+                  const SizedBox(height: 12),
+                ],
                 Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
                   Joystick(
-                    size: 168,
+                    size: stickSize,
                     enabled: _pi != null,
                     onChanged: (v) {
                       if (_stick == Offset.zero && v != Offset.zero) HapticFeedback.selectionClick();
@@ -489,36 +452,6 @@ class _DriveScreenState extends State<DriveScreen> {
                   ),
                   const Spacer(),
                   Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                    _Glass(
-                      radius: 20,
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: Column(mainAxisSize: MainAxisSize.min, children: [
-                          GestureDetector(
-                            onLongPress: _editArmToken,
-                            child: const Padding(
-                              padding: EdgeInsets.only(top: 4, bottom: 2),
-                              child: Text('ARM', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1)),
-                            ),
-                          ),
-                          _armButton('up', Icons.keyboard_arrow_up),
-                          _armButton('down', Icons.keyboard_arrow_down),
-                          _raisedButton(),
-                          SizedBox(
-                            width: 76,
-                            child: Text(
-                              _armHint,
-                              textAlign: TextAlign.center,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: AgriColors.textOnDarkMuted, fontSize: 9, height: 1.2),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                        ]),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
                     _Glass(
                       radius: 20,
                       child: Padding(
@@ -545,7 +478,7 @@ class _DriveScreenState extends State<DriveScreen> {
                     const SizedBox(height: 14),
                     Semantics(
                       button: true,
-                      label: 'Stop',
+                      label: 'Stop wheels and arm',
                       child: GestureDetector(
                         onTap: _emergencyStop,
                         child: Container(
@@ -571,6 +504,245 @@ class _DriveScreenState extends State<DriveScreen> {
       ),
     );
   }
+
+  /// Frosted arm bar: status line, then Up / Down (hold), Retract and Arm Raised.
+  Widget _armPanel() {
+    final state = _armState;
+    return _Glass(
+      radius: 22,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 6, 10),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            const Icon(Icons.precision_manufacturing_outlined, size: 18, color: AgriColors.mint),
+            const SizedBox(width: 8),
+            const Text('Arm', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w800)),
+            const SizedBox(width: 10),
+            Expanded(child: Align(alignment: Alignment.centerLeft, child: StatusPill(state.message, tone: state.tone, dark: true))),
+            IconButton(
+              tooltip: _armToken.isEmpty ? 'Add arm token' : 'Change arm token',
+              visualDensity: VisualDensity.compact,
+              icon: Icon(Icons.key_outlined, size: 20, color: state.needsToken ? AgriColors.warning : AgriColors.textOnDarkMuted),
+              onPressed: _editArmToken,
+            ),
+          ]),
+          if (_arm != null) ...[
+            const SizedBox(height: 6),
+            Row(children: [
+              Expanded(child: _holdButton('up', 'Up', Icons.keyboard_arrow_up, state.canNudge)),
+              const SizedBox(width: 6),
+              Expanded(child: _holdButton('down', 'Down', Icons.keyboard_arrow_down, state.canNudge)),
+              const SizedBox(width: 6),
+              if (state.canRetract) ...[
+                Expanded(child: _actionButton('Retract', Icons.u_turn_left, _retract, enabled: true)),
+                const SizedBox(width: 6),
+              ],
+              Expanded(child: _actionButton('Arm raised', Icons.verified_outlined, _confirmRaised, enabled: state.canConfirmRaised)),
+              const SizedBox(width: 6),
+            ]),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Widget _holdButton(String direction, String label, IconData icon, bool enabled) {
+    final active = _armHeld == direction;
+    final fg = !enabled ? Colors.white38 : active ? AgriColors.forest : Colors.white;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: 'Arm $label, hold to move',
+      child: Listener(
+        onPointerDown: enabled ? (_) => _armHold(direction) : null,
+        onPointerUp: (_) => _armRelease(),
+        onPointerCancel: (_) => _armRelease(),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          height: 48,
+          decoration: BoxDecoration(
+            color: active ? AgriColors.mint : Colors.white.withValues(alpha: enabled ? 0.12 : 0.05),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon, size: 22, color: fg),
+            Text(label, style: TextStyle(color: fg, fontSize: 13, fontWeight: FontWeight.w800)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _actionButton(String label, IconData icon, VoidCallback onTap, {required bool enabled}) {
+    final fg = enabled ? AgriColors.mint : Colors.white38;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      child: GestureDetector(
+        onTap: enabled ? onTap : null,
+        child: Container(
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(border: Border.all(color: enabled ? AgriColors.mint : Colors.white24), borderRadius: BorderRadius.circular(16)),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon, size: 16, color: fg),
+            const SizedBox(width: 4),
+            Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w800))),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// One-line frosted note under the sensor chips (demo data, wheel lock, controller).
+class _GlassNote extends StatelessWidget {
+  const _GlassNote({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Align(
+        alignment: Alignment.centerLeft,
+        child: _Glass(
+          radius: 16,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Padding(padding: const EdgeInsets.only(top: 1), child: Icon(icon, size: 14, color: AgriColors.mint)),
+              const SizedBox(width: 6),
+              Flexible(child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 11, height: 1.35, fontWeight: FontWeight.w600))),
+            ]),
+          ),
+        ),
+      );
+}
+
+/// Sheet header used by the arm sheets (same pattern as share_network_sheet.dart).
+class _SheetHeader extends StatelessWidget {
+  const _SheetHeader({required this.title, required this.subtitle});
+  final String title, subtitle;
+
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Center(child: Container(width: 44, height: 5, decoration: BoxDecoration(color: AgriColors.border, borderRadius: BorderRadius.circular(3)))),
+        const SizedBox(height: 14),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              Text(subtitle, style: AgriText.body),
+            ]),
+          ),
+          IconButton.filledTonal(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close), tooltip: 'Close'),
+        ]),
+      ]);
+}
+
+/// Enter the token that matches AGRIBOT_LOCAL_TOKEN on the robot. Stored in the
+/// iOS Keychain / Android Keystore via flutter_secure_storage.
+class _ArmTokenSheet extends StatefulWidget {
+  const _ArmTokenSheet({required this.initial});
+  final String initial;
+  @override
+  State<_ArmTokenSheet> createState() => _ArmTokenSheetState();
+}
+
+class _ArmTokenSheetState extends State<_ArmTokenSheet> {
+  late final _token = TextEditingController(text: widget.initial);
+  bool _show = false;
+
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const _SheetHeader(
+                title: 'Arm control token',
+                subtitle: 'Needed for Arm Up/Down, Retract and Arm Raised. Use the AGRIBOT_LOCAL_TOKEN set on the robot. It is stored securely on this phone.',
+              ),
+              const SizedBox(height: 8),
+              AgriTextField(
+                label: 'Token',
+                controller: _token,
+                obscure: !_show,
+                hint: 'From /etc/agribot.env on the Pi',
+                suffix: IconButton(
+                  tooltip: _show ? 'Hide token' : 'Show token',
+                  icon: Icon(_show ? Icons.visibility_off : Icons.visibility, color: AgriColors.textMuted),
+                  onPressed: () => setState(() => _show = !_show),
+                ),
+              ),
+              const SizedBox(height: 12),
+              PrimaryButton(label: 'Save token', icon: Icons.key, onPressed: () => Navigator.pop(context, _token.text.trim())),
+              if (widget.initial.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, ''),
+                  child: const Text('Remove token', style: TextStyle(fontWeight: FontWeight.w800, color: AgriColors.error)),
+                ),
+              ],
+            ]),
+          ),
+        ),
+      );
+}
+
+/// Operator check-list before an arm action. The action button stays disabled
+/// until every item is ticked.
+class _ArmConfirmSheet extends StatefulWidget {
+  const _ArmConfirmSheet({required this.title, required this.body, required this.checks, required this.footnote, required this.action});
+  final String title, body, footnote, action;
+  final List<String> checks;
+  @override
+  State<_ArmConfirmSheet> createState() => _ArmConfirmSheetState();
+}
+
+class _ArmConfirmSheetState extends State<_ArmConfirmSheet> {
+  late final List<bool> _ticked = List<bool>.filled(widget.checks.length, false);
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            _SheetHeader(title: widget.title, subtitle: widget.body),
+            const SizedBox(height: 6),
+            for (var i = 0; i < widget.checks.length; i++)
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                activeColor: AgriColors.primary,
+                value: _ticked[i],
+                onChanged: (v) => setState(() => _ticked[i] = v ?? false),
+                title: Text(widget.checks[i], style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+              ),
+            Container(
+              margin: const EdgeInsets.only(top: 6, bottom: 14),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: const Color(0xFFFBF1DD), borderRadius: BorderRadius.circular(18)),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.info, color: AgriColors.warning, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Text(widget.footnote, style: const TextStyle(fontSize: 12, height: 1.4))),
+              ]),
+            ),
+            PrimaryButton(label: widget.action, onPressed: _ticked.every((t) => t) ? () => Navigator.pop(context, true) : null),
+          ]),
+        ),
+      );
 }
 
 /// Frosted panel that sits over the camera image.
