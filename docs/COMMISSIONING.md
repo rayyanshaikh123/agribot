@@ -225,8 +225,11 @@ button is held and sends STOP on release; the red STOP stops wheels and arm.
    elbow and wrist fight each other instead of lifting together, flip only the wrongly-turning
    one. Restart after each change.
 2. Enable the app: set a strong `AGRIBOT_LOCAL_TOKEN`, `ARM_APP_CONTROL=true`, restart; in the
-   app's Drive screen long-press **ARM**, enter the token. The buttons stay greyed out unless the
-   robot reports app control on and an arm mode that allows motion.
+   app's Drive screen tap the **key** icon on the Arm bar and enter the token (stored in the iOS
+   Keychain). The buttons stay disabled, with the reason shown, unless the robot reports app
+   control on and an arm mode that allows motion. **Arm raised** appears enabled only while the
+   wheels are locked by the arm and the ESP32 is connected; **Retract** appears only for a
+   commissioned (`ARM_COMMISSIONED=true`), homed arm.
 3. Test hold/release, release mid-move (must stop at once), STOP button, and Wi-Fi loss while
    holding (the current nudge ends by itself within `ARM_NUDGE_MS`; the ESP32 disarms after 2.5 s).
 Nudges are timed open-loop moves: they never establish a position, and after any nudge the probe

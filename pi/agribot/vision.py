@@ -63,10 +63,11 @@ class Detector:
     def _load(self):
         if cv2 is None:
             raise RuntimeError("OpenCV is not installed (pip install opencv-python-headless)")
-        import onnxruntime as ort
-
+        # Check the file first: "model missing" is the more useful message.
         if not self.cfg.model_path.exists():
             raise FileNotFoundError(f"model not found at {self.cfg.model_path}")
+        import onnxruntime as ort
+
         options = ort.SessionOptions()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.session = ort.InferenceSession(str(self.cfg.model_path), options, providers=["CPUExecutionProvider"])
